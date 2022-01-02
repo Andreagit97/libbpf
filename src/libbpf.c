@@ -1216,8 +1216,12 @@ static void bpf_object__elf_finish(struct bpf_object *obj)
 	obj->efile.obj_buf_sz = 0;
 }
 
+
+
+/* This function contains just sanity checks for the elf passed. */
 static int bpf_object__elf_init(struct bpf_object *obj)
 {
+	/* stuff from libbelf */
 	Elf64_Ehdr *ehdr;
 	int err = 0;
 	Elf *elf;
@@ -1317,6 +1321,8 @@ static int bpf_object__check_endianness(struct bpf_object *obj)
 	return -LIBBPF_ERRNO__ENDIAN;
 }
 
+
+/* take the license name from the elf and put it in the bpf object struct. */
 static int
 bpf_object__init_license(struct bpf_object *obj, void *data, size_t size)
 {
@@ -1328,6 +1334,9 @@ bpf_object__init_license(struct bpf_object *obj, void *data, size_t size)
 	return 0;
 }
 
+
+
+/* The kernel version section is not strictly necessary.*/
 static int
 bpf_object__init_kversion(struct bpf_object *obj, void *data, size_t size)
 {
@@ -2697,6 +2706,11 @@ static bool kernel_needs_btf(const struct bpf_object *obj)
 	return obj->efile.st_ops_shndx >= 0;
 }
 
+
+
+
+
+/* save .BTF and .BTF_EXT inside the bpf object */
 static int bpf_object__init_btf(struct bpf_object *obj,
 				Elf_Data *btf_data,
 				Elf_Data *btf_ext_data)
@@ -2736,6 +2750,10 @@ out:
 	}
 	return 0;
 }
+
+
+
+
 
 static int compare_vsi_off(const void *_a, const void *_b)
 {
@@ -3177,6 +3195,7 @@ static bool ignore_elf_section(Elf64_Shdr *hdr, const char *name)
 	if (is_sec_name_dwarf(name))
 		return true;
 
+	/*we can ignore the relocation section only if it is a BTF section or a dubg section*/
 	if (str_has_pfx(name, ".rel")) {
 		name += sizeof(".rel") - 1;
 		/* DWARF section relocations */
@@ -3204,6 +3223,23 @@ static int cmp_progs(const void *_a, const void *_b)
 	return a->sec_insn_off < b->sec_insn_off ? -1 : 1;
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* This function read effectively the elf file. */
 static int bpf_object__elf_collect(struct bpf_object *obj)
 {
 	struct elf_sec_desc *sec_desc;
@@ -3226,7 +3262,7 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 		return -ENOMEM;
 
 	/* a bunch of ELF parsing functionality depends on processing symbols,
-	 * so do the first pass and find the symbol table
+	 * so do the first pass and find the symbol table.
 	 */
 	scn = NULL;
 	while ((scn = elf_nextscn(elf, scn)) != NULL) {
@@ -3234,6 +3270,7 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 		if (!sh)
 			return -LIBBPF_ERRNO__FORMAT;
 
+		/* check all the section header and find the symbol table*/
 		if (sh->sh_type == SHT_SYMTAB) {
 			if (obj->efile.symbols) {
 				pr_warn("elf: multiple symbol tables in %s\n", obj->path);
@@ -3260,20 +3297,28 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 
 	scn = NULL;
 	while ((scn = elf_nextscn(elf, scn)) != NULL) {
+		
+		/* section index.*/
 		idx = elf_ndxscn(scn);
+
+		/* bpf_object will contain some information for every section*/
 		sec_desc = &obj->efile.secs[idx];
 
+		/* scn = section    sh= section header*/
 		sh = elf_sec_hdr(obj, scn);
 		if (!sh)
 			return -LIBBPF_ERRNO__FORMAT;
 
+		/*section name*/
 		name = elf_sec_str(obj, sh->sh_name);
 		if (!name)
 			return -LIBBPF_ERRNO__FORMAT;
 
+		/* ignore some sections like the text section, if empty.*/
 		if (ignore_elf_section(sh, name))
 			continue;
 
+		/* contains for example the dimension of the section. */
 		data = elf_sec_data(obj, scn);
 		if (!data)
 			return -LIBBPF_ERRNO__FORMAT;
@@ -3283,6 +3328,13 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 			 (int)sh->sh_link, (unsigned long)sh->sh_flags,
 			 (int)sh->sh_type);
 
+
+
+
+
+
+
+		/*process every section in a different way*/
 		if (strcmp(name, "license") == 0) {
 			err = bpf_object__init_license(obj, data->d_buf, data->d_size);
 			if (err)
@@ -3292,12 +3344,18 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 			if (err)
 				return err;
 		} else if (strcmp(name, "maps") == 0) {
+			/* save the index of the section with map definition.
+			 * NOTE: this section name is different from `.maps`
+        	 */
 			obj->efile.maps_shndx = idx;
 		} else if (strcmp(name, MAPS_ELF_SEC) == 0) {
+			/* this is the section `.maps`, these are maps defined in btf format */
 			obj->efile.btf_maps_shndx = idx;
 		} else if (strcmp(name, BTF_ELF_SEC) == 0) {
+			/*section `.BTF` */
 			if (sh->sh_type != SHT_PROGBITS)
 				return -LIBBPF_ERRNO__FORMAT;
+			/* all the types used in my bpf program*/	
 			btf_data = data;
 		} else if (strcmp(name, BTF_EXT_ELF_SEC) == 0) {
 			if (sh->sh_type != SHT_PROGBITS)
@@ -3329,7 +3387,7 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 				pr_info("elf: skipping unrecognized data section(%d) %s\n",
 					idx, name);
 			}
-		} else if (sh->sh_type == SHT_REL) {
+		} else if (sh->sh_type == SHT_REL) { /* here rel section are */
 			int targ_sec_idx = sh->sh_info; /* points to other section */
 
 			if (sh->sh_entsize != sizeof(Elf64_Rel) ||
@@ -3364,11 +3422,15 @@ static int bpf_object__elf_collect(struct bpf_object *obj)
 		return -LIBBPF_ERRNO__FORMAT;
 	}
 
+
+
+
 	/* sort BPF programs by section name and in-section instruction offset
 	 * for faster search */
 	if (obj->nr_programs)
 		qsort(obj->programs, obj->nr_programs, sizeof(*obj->programs), cmp_progs);
 
+	/*In btf_data we have the btf type information directly extracted from the elf file*/
 	return bpf_object__init_btf(obj, btf_data, btf_ext_data);
 }
 
@@ -3398,6 +3460,13 @@ static bool sym_is_subprog(const Elf64_Sym *sym, int text_shndx)
 	return bind == STB_GLOBAL && type == STT_FUNC;
 }
 
+
+
+
+
+
+
+/* between btf type should be a type named LINUX_KERNEL_VERSION */
 static int find_extern_btf_id(const struct btf *btf, const char *ext_name)
 {
 	const struct btf_type *t;
@@ -3407,14 +3476,18 @@ static int find_extern_btf_id(const struct btf *btf, const char *ext_name)
 	if (!btf)
 		return -ESRCH;
 
+	/*number of btf types*/
 	n = btf__type_cnt(btf);
+
 	for (i = 1; i < n; i++) {
 		t = btf__type_by_id(btf, i);
 
 		if (!btf_is_var(t) && !btf_is_func(t))
 			continue;
 
+
 		tname = btf__name_by_offset(btf, t->name_off);
+		// if the name is different continue
 		if (strcmp(tname, ext_name))
 			continue;
 
@@ -3430,6 +3503,15 @@ static int find_extern_btf_id(const struct btf *btf, const char *ext_name)
 
 	return -ENOENT;
 }
+
+
+
+
+
+
+
+
+
 
 static int find_extern_sec_btf_id(struct btf *btf, int ext_btf_id) {
 	const struct btf_var_secinfo *vs;
@@ -3596,9 +3678,11 @@ static int bpf_object__collect_externs(struct bpf_object *obj)
 	if (dummy_var_btf_id < 0)
 		return dummy_var_btf_id;
 
+	/* inside the symbol table look for externs (size/size of the single entry)*/
 	n = sh->sh_size / sh->sh_entsize;
 	pr_debug("looking for externs among %d symbols...\n", n);
 
+	/* for every symbol in the symbol table */
 	for (i = 0; i < n; i++) {
 		Elf64_Sym *sym = elf_sym_by_idx(obj, i);
 
@@ -3610,6 +3694,7 @@ static int bpf_object__collect_externs(struct bpf_object *obj)
 		if (!ext_name || !ext_name[0])
 			continue;
 
+		/* if it is an extern add it to an array of externs*/
 		ext = obj->externs;
 		ext = libbpf_reallocarray(ext, obj->nr_extern + 1, sizeof(*ext));
 		if (!ext)
@@ -3619,6 +3704,7 @@ static int bpf_object__collect_externs(struct bpf_object *obj)
 		memset(ext, 0, sizeof(*ext));
 		obj->nr_extern++;
 
+		/* for every btf_type_id check if the name matches */
 		ext->btf_id = find_extern_btf_id(obj->btf, ext_name);
 		if (ext->btf_id <= 0) {
 			pr_warn("failed to find BTF for extern '%s': %d\n",
@@ -3630,6 +3716,7 @@ static int bpf_object__collect_externs(struct bpf_object *obj)
 		ext->sym_idx = i;
 		ext->is_weak = ELF64_ST_BIND(sym->st_info) == STB_WEAK;
 
+		
 		ext->sec_btf_id = find_extern_sec_btf_id(obj->btf, ext->btf_id);
 		if (ext->sec_btf_id <= 0) {
 			pr_warn("failed to find BTF for extern '%s' [%d] section: %d\n",
@@ -3783,6 +3870,11 @@ static int bpf_object__collect_externs(struct bpf_object *obj)
 	}
 	return 0;
 }
+
+
+
+
+
 
 struct bpf_program *
 bpf_object__find_program_by_title(const struct bpf_object *obj,
@@ -6929,6 +7021,13 @@ static int bpf_object_init_progs(struct bpf_object *obj, const struct bpf_object
 	return 0;
 }
 
+
+
+
+
+
+
+/* Open an elf file and return a bpf_object. */
 static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf, size_t obj_buf_sz,
 					  const struct bpf_object_open_opts *opts)
 {
@@ -6940,6 +7039,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 	size_t log_size;
 	__u32 log_level;
 
+
 	if (elf_version(EV_CURRENT) == EV_NONE) {
 		pr_warn("failed to init libelf for %s\n",
 			path ? : "(mem buf)");
@@ -6949,6 +7049,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 	if (!OPTS_VALID(opts, bpf_object_open_opts))
 		return ERR_PTR(-EINVAL);
 
+	/* this is NULL we pass NULL opts*/
 	obj_name = OPTS_GET(opts, object_name, NULL);
 	if (obj_buf) {
 		if (!obj_name) {
@@ -6961,6 +7062,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 		pr_debug("loading object '%s' from buffer\n", obj_name);
 	}
 
+
 	log_buf = OPTS_GET(opts, kernel_log_buf, NULL);
 	log_size = OPTS_GET(opts, kernel_log_size, 0);
 	log_level = OPTS_GET(opts, kernel_log_level, 0);
@@ -6969,6 +7071,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 	if (log_size && !log_buf)
 		return ERR_PTR(-EINVAL);
 
+	/* calloc the bpf_object struct*/
 	obj = bpf_object__new(path, obj_buf, obj_buf_sz, obj_name);
 	if (IS_ERR(obj))
 		return obj;
@@ -6977,6 +7080,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 	obj->log_size = log_size;
 	obj->log_level = log_level;
 
+	/* also this is NULL */
 	btf_tmp_path = OPTS_GET(opts, btf_custom_path, NULL);
 	if (btf_tmp_path) {
 		if (strlen(btf_tmp_path) >= PATH_MAX) {
@@ -6990,6 +7094,7 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 		}
 	}
 
+	/* also this is NULL */
 	kconfig = OPTS_GET(opts, kconfig, NULL);
 	if (kconfig) {
 		obj->kconfig = strdup(kconfig);
@@ -6999,9 +7104,16 @@ static struct bpf_object *bpf_object_open(const char *path, const void *obj_buf,
 		}
 	}
 
+	/* This function contains just sanity checks for the elf passed. */	
 	err = bpf_object__elf_init(obj);
+	
+	/* check the endianess of the elf file with the endianess of the system */
 	err = err ? : bpf_object__check_endianness(obj);
+
+	/* collect information about all the section and extract .BTF data from the elf file. */
 	err = err ? : bpf_object__elf_collect(obj);
+
+
 	err = err ? : bpf_object__collect_externs(obj);
 	err = err ? : bpf_object__finalize_btf(obj);
 	err = err ? : bpf_object__init_maps(obj, opts);
@@ -7048,6 +7160,10 @@ struct bpf_object *bpf_object__open(const char *path)
 	return libbpf_ptr(__bpf_object__open_xattr(&attr, 0));
 }
 
+
+
+/* When we wnat to open an elf file we have to use this function.
+ */
 struct bpf_object *
 bpf_object__open_file(const char *path, const struct bpf_object_open_opts *opts)
 {
